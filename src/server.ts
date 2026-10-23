@@ -41,9 +41,13 @@ import {
    stopSessionActivityCleanupJob,
 } from './jobs/session-activity-cleanup.job';
 import {
-   startKeyAnalyticsSnapshotJob,
-   stopKeyAnalyticsSnapshotJob,
-} from './jobs/key-analytics-snapshot.job';
+   startCampaignCronJobs,
+   stopCampaignCronJobs,
+} from './jobs/campaign-cron.job';
+import {
+   startAutoInvestListener,
+   stopAutoInvestListener,
+} from './modules/auto-invest/auto-invest.service';
 import { connectRedis, disconnectRedis } from './utils/redis.utils';
 import { broadcastServerClosing, closeAllConnections } from './utils/sse-fanout.utils';
 import { buildStartupConfigSummary } from './utils/config-summary.utils';
@@ -106,8 +110,9 @@ async function startServer() {
       startFlashLoanViolationCleanupJob();
       startStatusProbeJob();
       startSessionActivityCleanupJob();
-      startKeyAnalyticsSnapshotJob();
+      startCampaignCronJobs();
       initKeyCreationMetadataSync();
+      startAutoInvestListener();
 
       const server = app.listen(envConfig.PORT, () => {
          logger.info(`Server running on port ${envConfig.PORT}`);
@@ -150,7 +155,8 @@ function createGracefulShutdownHandler(server: ReturnType<typeof app.listen>) {
       stopFlashLoanViolationCleanupJob();
       stopStatusProbeJob();
       stopSessionActivityCleanupJob();
-      stopKeyAnalyticsSnapshotJob();
+      stopCampaignCronJobs();
+      stopAutoInvestListener();
       await prisma.$disconnect();
       logger.info('Database connection closed');
 

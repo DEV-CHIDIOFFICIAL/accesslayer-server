@@ -246,6 +246,9 @@ export const envSchema = z
          .positive()
          .default(300),
 
+      // Dynamic fee contract (#1055)
+      DYNAMIC_FEE_CONTRACT_ID: optionalNonEmptyString,
+
       // Nonce registry contract (#1039): deployed contract id holding the
       // on-chain single-use nonce registry, and short TTL for cached nonces.
       NONCE_REGISTRY_CONTRACT_ID: optionalNonEmptyString,
@@ -253,6 +256,18 @@ export const envSchema = z
 
       // LP position registry contract
       LP_CONTRACT_ID: optionalNonEmptyString,
+
+      // Invoice protocol adapters. Unconfigured reads/execution fail closed.
+      ISSUER_REPUTATION_CONTRACT_ID: optionalNonEmptyString,
+      INVOICE_TRANSFER_CONTRACT_ID: optionalNonEmptyString,
+      INVOICE_MARKET_CONTRACT_ID: optionalNonEmptyString,
+      INVOICE_MARKET_ABI: optionalNonEmptyString,
+      INVOICE_FRAUD_CONTRACT_ID: optionalNonEmptyString,
+      INVOICE_TIMELOCK_CONTRACT_ID: optionalNonEmptyString,
+
+      // Portfolio health score contract (get_health_score). Unset fails the
+      // /investors/:wallet/health-score read closed with 503.
+      PORTFOLIO_HEALTH_CONTRACT_ID: optionalNonEmptyString,
 
       // Social metadata sync (Pinata gateway used to resolve avatar CIDs)
       PINATA_GATEWAY_URL: z
@@ -623,6 +638,44 @@ export const envSchema = z
          .int()
          .positive()
          .optional(),
+
+      // Campaign evaluation and expiry cron (#campaign-cron)
+      CAMPAIGN_CRON_ENABLED: booleanCoerce.default(true),
+      CAMPAIGN_EVALUATION_INTERVAL_HOURS: z.coerce
+         .number()
+         .int()
+         .positive()
+         .default(24),
+      CAMPAIGN_END_CHECK_INTERVAL_MINUTES: z.coerce
+         .number()
+         .int()
+         .positive()
+         .default(60),
+      CAMPAIGN_QUALIFICATION_BATCH_SIZE: z.coerce
+         .number()
+         .int()
+         .positive()
+         .default(100),
+      CAMPAIGN_QUALIFICATION_CONCURRENCY: z.coerce
+         .number()
+         .int()
+         .positive()
+         .default(5),
+
+      // Key NFT badge minting trigger service (#1148). Minting is disabled
+      // until both the contract id and the server minter secret are set.
+      BADGE_CONTRACT_ID: optionalNonEmptyString,
+      BADGE_MINTER_SECRET: optionalNonEmptyString,
+      // Single-swap size (XLM) that earns the WHALE_HOLDER badge.
+      BADGE_WHALE_THRESHOLD_XLM: z.coerce.number().positive().default(10000),
+      // Continuous hold (days) that earns the DIAMOND_HANDS badge.
+      BADGE_HOLD_MILESTONE_DAYS: z.coerce.number().int().positive().default(365),
+      // Highest leaderboard rank (inclusive) that earns the TOP_TRADER badge.
+      BADGE_TOP_TRADER_MAX_RANK: z.coerce.number().int().positive().default(10),
+      // Max mint attempts before a transient failure is treated as terminal.
+      BADGE_MINT_MAX_ATTEMPTS: z.coerce.number().int().positive().default(3),
+      // Slow request threshold (#754): warn-level log for requests exceeding this duration
+      SLOW_REQUEST_THRESHOLD_MS: z.coerce.number().int().positive().default(2000),
    })
    .superRefine((data, ctx) => {
       if (data.MODE === 'production' && data.STELLAR_NETWORK === 'testnet') {

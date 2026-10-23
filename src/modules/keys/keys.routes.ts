@@ -39,6 +39,10 @@ import { getKeyProposals, getProposalForVoting } from './key-proposals.service';
 import { getKeySupply } from './key-supply.service';
 import { httpGetKeyLeaderboard } from './key-leaderboard.controller';
 import {
+   httpGetKeyEventLeaderboard,
+   httpGetWalletKeyEventLeaderboard,
+} from './key-event-leaderboard.controller';
+import {
    httpGetHolderLeaderboard,
    httpGetHolderRank,
 } from './key-holder-leaderboard.controller';
@@ -46,7 +50,13 @@ import {
 import { KeySearchQueryTooShortError, searchKeys } from './key-search.service';
 import { KEY_SEARCH_MIN_QUERY_LENGTH } from '../../constants/notifications.constants';
 import dividendRouter from '../dividends/dividend.routes';
+import revenueDistributionsRouter from '../revenue/revenue-distributions.routes';
 import whitelistRouter from '../whitelist/whitelist.routes';
+import coCreatorsRouter from '../co-creators/co-creators.routes';
+import reservesRouter from '../reserves/reserves.routes';
+import contentAccessRouter from '../content-access/content-access.routes';
+import tipsRouter from '../tips/tips.routes';
+import keyPollsRouter from './key-polls.routes';
 import {
    requireJwtAuth,
    requireKeyCreator,
@@ -95,6 +105,13 @@ import {
    processBuyback,
 } from './key-deprecation.service';
 import { getKeyCooldown } from './key-cooldown.service';
+import {
+   getPollVoteWeight,
+   pollWeightCacheKey,
+   PollNotFoundError,
+   PollVoteWeight,
+   POLL_WEIGHT_CACHE_SECONDS,
+} from './key-poll-weight.service';
 import { getKeyHoldingCapacity } from './key-holding-capacity.service';
 import { StellarAddressSchema } from '../wallet/wallet.schemas';
 import {
@@ -121,6 +138,10 @@ import {
    calculateEffectiveWeight,
 } from '../staking/staking.service';
 import { getKeyCurveMilestones } from './key-milestones.service';
+import { getPendingCurveUpdates, getCurveUpdateHistory } from './curve-updates.service';
+import { getKeyHolderMilestones } from './holder-milestones.service';
+import { getKeyRetirement, getKeyRetirementHistory } from './key-retirement.service';
+import { getKeyLaunchAuction, getKeyLaunchAuctionBids } from './key-launch-auction.service';
 import { getSunsetWatchList } from './key-sunset-watch.service';
 import {
    getKeyPaymentAssetAnalytics,
@@ -150,6 +171,12 @@ import {
 } from './key-price.service';
 import { getKeyTwap } from './key-twap-window.service';
 import { getTwapSnapshot } from './key-twap-snapshot.service';
+import {
+   DEPTH_DEFAULT_LEVELS,
+   DEPTH_MAX_LEVELS,
+   getKeyDepth,
+   getKeySpread,
+} from './key-depth.service';
 
 const priceHistoryQuerySchema = z.object({
    from: z.string().datetime(),
@@ -228,6 +255,11 @@ const keyPriceQuerySchema = z.object({
       .min(1, 'quantity must be at least 1')
       .max(1_000_000, 'quantity must be at most 1,000,000')
       .default(1),
+});
+
+const launchAuctionBidsQuerySchema = z.object({
+   page: z.coerce.number().int().min(1).default(1),
+   limit: z.coerce.number().int().min(1).max(100).default(20),
 });
 
 const router = Router();
@@ -663,6 +695,18 @@ router.get('/:keyId/holders/leaderboard', httpGetHolderLeaderboard);
 router.get('/:keyId/holders/:wallet/rank', httpGetHolderRank);
 
 /**
+ * GET /api/v1/keys/:keyId/leaderboard?metric=volume|pnl|holding_days&limit=
+ * Returns indexed wallet rankings for a key and metric.
+ */
+router.get('/:keyId/leaderboard', httpGetKeyEventLeaderboard);
+
+/**
+ * GET /api/v1/keys/:keyId/leaderboard/:wallet
+ * Returns the wallet's rank and score for each indexed metric.
+ */
+router.get('/:keyId/leaderboard/:wallet', httpGetWalletKeyEventLeaderboard);
+
+/**
  * GET /api/v1/keys/:keyId/circuit-breaker?limit=&offset=
  *
  * Returns the key's circuit breaker state: the configured max_bps (read from
@@ -859,6 +903,84 @@ router.get('/:keyId/curve-config', async (req, res, next) => {
    }
 });
 
+router.get('/:keyId/curve-updates/pending', async (req, res, next) => {
+   try {
+      sendSuccess(res, await getPendingCurveUpdates(String(req.params.keyId)));
+   } catch (error) {
+      next(error);
+   }
+});
+
+router.get('/:keyId/curve-updates/history', async (req, res, next) => {
+   try {
+      sendSuccess(res, await getCurveUpdateHistory(String(req.params.keyId)));
+   } catch (error) {
+      next(error);
+   }
+});
+
+router.get('/:keyId/milestones/:wallet', async (req, res, next) => {
+   try {
+      sendSuccess(
+         res,
+         await getKeyHolderMilestones(
+            String(req.params.keyId),
+            String(req.params.wallet)
+         )
+      );
+   } catch (error) {
+      next(error);
+   }
+});
+
+router.get('/:keyId/retirement', async (req, res, next) => {
+   try {
+      sendSuccess(res, await getKeyRetirement(String(req.params.keyId)));
+   } catch (error) {
+      next(error);
+   }
+});
+
+router.get('/:keyId/retirement/history', async (req, res, next) => {
+   try {
+      sendSuccess(res, await getKeyRetirementHistory(String(req.params.keyId)));
+   } catch (error) {
+      next(error);
+   }
+});
+
+router.get('/:keyId/auction', async (req, res, next) => {
+   try {
+      const result = await getKeyLaunchAuction(String(req.params.keyId));
+      if (!result) return sendNotFound(res, 'Auction');
+      sendSuccess(res, result);
+   } catch (error) {
+      next(error);
+   }
+});
+
+router.get('/:keyId/auction/bids', async (req, res, next) => {
+   const parsed = launchAuctionBidsQuerySchema.safeParse(req.query);
+   if (!parsed.success) {
+      return sendValidationError(
+         res,
+         'Invalid pagination',
+         zodIssuesToDetails(parsed.error.issues)
+      );
+   }
+   try {
+      const result = await getKeyLaunchAuctionBids(
+         String(req.params.keyId),
+         parsed.data.page,
+         parsed.data.limit
+      );
+      if (!result) return sendNotFound(res, 'Auction');
+      sendSuccess(res, result);
+   } catch (error) {
+      next(error);
+   }
+});
+
 // ── GET /:keyId/twap (#1082) ──────────────────────────────────
 // TWAP from the indexed TWAPUpdated contract events (twap_snapshots table),
 // windows 1h|4h|24h, 60s cache invalidated per key by the indexer.
@@ -928,6 +1050,65 @@ router.get('/:keyId/twap', async (req, res, next) => {
    }
 });
 
+// ── GET /:keyId/depth and /:keyId/depth/spread (#1152) ────────
+// Order book depth from the indexed DepthUpdated events (key_depth table),
+// 5s cache invalidated per key by the indexer. Keys with no open orders
+// return empty sides (and null spread fields), not an error.
+
+const depthQuerySchema = z.object({
+   levels: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(DEPTH_MAX_LEVELS)
+      .default(DEPTH_DEFAULT_LEVELS),
+});
+
+async function resolveDepthKeyId(keyId: string): Promise<string | null> {
+   const creator = await prisma.creatorProfile.findFirst({
+      where: { OR: [{ id: keyId }, { handle: keyId }] },
+      select: { id: true },
+   });
+   return creator?.id ?? null;
+}
+
+router.get('/:keyId/depth/spread', async (req, res, next) => {
+   try {
+      const id = await resolveDepthKeyId(String(req.params.keyId));
+      if (!id) {
+         sendNotFound(res, 'Key');
+         return;
+      }
+      sendSuccess(res, await getKeySpread(id));
+   } catch (error) {
+      next(error);
+   }
+});
+
+router.get('/:keyId/depth', async (req, res, next) => {
+   const parsed = depthQuerySchema.safeParse(req.query);
+   if (!parsed.success) {
+      sendError(
+         res,
+         422,
+         ErrorCode.UNPROCESSABLE_ENTITY,
+         `Invalid levels param. Must be an integer between 1 and ${DEPTH_MAX_LEVELS}`,
+         zodIssuesToDetails(parsed.error.issues)
+      );
+      return;
+   }
+   try {
+      const id = await resolveDepthKeyId(String(req.params.keyId));
+      if (!id) {
+         sendNotFound(res, 'Key');
+         return;
+      }
+      sendSuccess(res, await getKeyDepth(id, parsed.data.levels));
+   } catch (error) {
+      next(error);
+   }
+});
+
 // ── GET /:keyId/twap/trade-history (#866) ─────────────────────
 // The earlier #866 endpoint, moved off /:keyId/twap when #1082 claimed that
 // path. Distinct from GET /:keyId/price/twap (#963): it serves the 1h/24h/7d
@@ -991,46 +1172,93 @@ router.get('/:keyId/fees', async (req, res, next) => {
    }
 });
 
+import { getSwapFeeTier, getKeyFeeHistory } from './key-swap-fee.service';
+
 const dynamicFeeQuerySchema = z.object({
    amount: z.coerce.number().int().nonnegative(),
    direction: z.enum(['buy', 'sell']),
    wallet: StellarAddressSchema.optional(),
 });
 
+const feeHistoryQuerySchema = z.object({
+   limit: z.coerce.number().int().min(1).max(100).default(50),
+   offset: z.coerce.number().int().nonnegative().default(0),
+});
+
 /**
- * GET /api/v1/keys/:keyId/fee
- * Computes the effective dynamic fee rate for a given trade, factoring in base fee,
- * volume-tier discount, protocol fee, and creator royalty (#962).
+ * GET /api/v1/keys/:keyId/fee/history
+ * Returns fee tier change history with timestamps from FeeAdjusted events.
  */
-router.get('/:keyId/fee', async (req, res, next) => {
-   const parsed = dynamicFeeQuerySchema.safeParse(req.query);
+router.get('/:keyId/fee/history', async (req, res, next) => {
+   const parsed = feeHistoryQuerySchema.safeParse(req.query);
    if (!parsed.success) {
       sendValidationError(
          res,
-         'Invalid dynamic fee query',
+         'Invalid fee history query parameters',
          zodIssuesToDetails(parsed.error.issues)
       );
       return;
    }
 
    try {
-      // We dynamically load the service here to avoid massive circular imports if any
-      const { getDynamicFeeRate } = await import('./key-dynamic-fee.service');
+      const history = await getKeyFeeHistory(req.params.keyId, parsed.data);
+      sendSuccess(res, history);
+   } catch (error) {
+      if (error instanceof KeyNotFoundError) {
+         sendNotFound(res, 'Key');
+         return;
+      }
+      next(error);
+   }
+});
 
-      // If the request is authenticated, we use the user's wallet for the volume discount
-      // In a real implementation we would extract the wallet from the JWT middleware (req.user),
-      // but this endpoint is public. We optionally accept a wallet address to preview discount.
-      const wallet = parsed.data.wallet;
+/**
+ * GET /api/v1/keys/:keyId/fee
+ * Returns the current swap fee tier for a given creator key by reading the dynamic fee contract,
+ * including current volume bracket, fee in basis points, and rolling 24h volume (#1055).
+ * Cached with 60s TTL.
+ */
+router.get('/:keyId/fee', async (req, res, next) => {
+   // If trade calculation query params are provided, handle dynamic fee rate computation
+   if (req.query.amount !== undefined && req.query.direction !== undefined) {
+      const parsed = dynamicFeeQuerySchema.safeParse(req.query);
+      if (!parsed.success) {
+         sendValidationError(
+            res,
+            'Invalid dynamic fee query',
+            zodIssuesToDetails(parsed.error.issues)
+         );
+         return;
+      }
 
-      sendSuccess(
-         res,
-         await getDynamicFeeRate(
-            req.params.keyId,
-            parsed.data.amount,
-            parsed.data.direction,
-            wallet
-         )
-      );
+      try {
+         const { getDynamicFeeRate } =
+            await import('./key-dynamic-fee.service');
+         const wallet = parsed.data.wallet;
+
+         sendSuccess(
+            res,
+            await getDynamicFeeRate(
+               req.params.keyId,
+               parsed.data.amount,
+               parsed.data.direction,
+               wallet
+            )
+         );
+         return;
+      } catch (error) {
+         if (error instanceof KeyNotFoundError) {
+            sendNotFound(res, 'Key');
+            return;
+         }
+         next(error);
+         return;
+      }
+   }
+
+   try {
+      const feeTier = await getSwapFeeTier(req.params.keyId);
+      sendSuccess(res, feeTier);
    } catch (error) {
       if (error instanceof KeyNotFoundError) {
          sendNotFound(res, 'Key');
@@ -1266,6 +1494,56 @@ router.post(
             { error, keyId: req.params.keyId },
             'Key proposal vote failed'
          );
+         next(error);
+      }
+   }
+);
+
+/**
+ * GET /api/v1/keys/:keyId/polls/:pollId/weight/:wallet
+ * Return a wallet's estimated vote weight for a key poll, read from the holder
+ * balance snapshot at the poll creation block. Used by the frontend vote modal.
+ *
+ * - Returns 404 if the poll does not exist for the key
+ * - Returns 400 if the wallet is not a valid Stellar address
+ * - Returns zero weight when the wallet held nothing at the snapshot block
+ * - Cached for 60s per wallet/poll pair
+ */
+const pollWeightParamsSchema = z.object({
+   wallet: StellarAddressSchema,
+});
+
+router.get(
+   '/:keyId/polls/:pollId/weight/:wallet',
+   async (req, res, next) => {
+      const keyId = String(req.params.keyId);
+      const pollId = String(req.params.pollId);
+      const parsed = pollWeightParamsSchema.safeParse(req.params);
+      if (!parsed.success) {
+         sendValidationError(
+            res,
+            'Invalid wallet address',
+            zodIssuesToDetails(parsed.error.issues)
+         );
+         return;
+      }
+      const wallet = parsed.data.wallet;
+
+      try {
+         const cacheKey = pollWeightCacheKey(keyId, pollId, wallet);
+         const cached = await cacheGetJson<PollVoteWeight>(cacheKey);
+         if (cached !== null) {
+            return sendSuccess(res, cached);
+         }
+
+         const weight = await getPollVoteWeight(keyId, pollId, wallet);
+         await cacheSetJson(cacheKey, weight, POLL_WEIGHT_CACHE_SECONDS);
+         sendSuccess(res, weight);
+      } catch (error) {
+         if (error instanceof PollNotFoundError) {
+            sendNotFound(res, 'Poll');
+            return;
+         }
          next(error);
       }
    }
@@ -1817,8 +2095,24 @@ router.get('/:keyId/simulate', async (req, res, next) => {
 // Mount dividend routes
 router.use('/', dividendRouter);
 
+// Creator key revenue distribution history and wallet claims
+router.use('/', revenueDistributionsRouter);
+
 // Mount whitelist routes
 router.use('/', whitelistRouter);
+
+// Mount co-creator roster routes (#1139)
+router.use('/', coCreatorsRouter);
+
+// Mount key reserve balance routes (#1140)
+router.use('/', reservesRouter);
+
+// Mount content-gate access routes (#1137)
+router.use('/', contentAccessRouter);
+
+// Mount tip history routes (#1132)
+router.use('/', tipsRouter);
+router.use('/', keyPollsRouter);
 
 // ── POST /:keyId/burn ─────────────────────────────────────────
 
